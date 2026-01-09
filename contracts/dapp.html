@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>金門高粱 RWA 窖藏平台</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/index.umd.min.js"></script>
+    <style>
+        .glass-card { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); }
+        .hidden { display: none; }
+    </style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+
+    <nav class="bg-blue-900 text-white p-4 shadow-lg">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold">KKL RWA 追蹤系統</h1>
+            <div id="accountDisplay" class="text-sm bg-blue-800 px-3 py-1 rounded">尚未連接錢包</div>
+            <button id="connectBtn" class="bg-amber-500 hover:bg-amber-600 px-4 py-2 rounded font-bold transition">連接錢包</button>
+        </div>
+    </nav>
+
+    <main class="container mx-auto p-6">
+        <div id="roleBadge" class="mb-6 inline-block px-4 py-1 rounded-full text-sm font-bold bg-gray-200 text-gray-700">
+            當前身份：訪客
+        </div>
+
+        <section id="adminSection" class="hidden mb-8 glass-card p-6 rounded-xl border-t-4 border-red-500 shadow">
+            <h2 class="text-2xl font-bold mb-4 text-red-700">🛠 管理者控制台 (酒廠專用)</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <input id="mintTo" type="text" placeholder="接收者地址 (0x...)" class="border p-2 rounded">
+                <input id="mintUri" type="text" placeholder="IPFS Metadata URI" class="border p-2 rounded">
+                <input id="mintBatch" type="text" placeholder="批號 (KKL-2024-01)" class="border p-2 rounded">
+                <input id="mintVol" type="number" placeholder="公升數" class="border p-2 rounded">
+                <input id="mintLoc" type="text" placeholder="儲存位置 (坑道名稱)" class="border p-2 rounded">
+                <button onclick="mintLiquor()" class="bg-red-600 text-white font-bold py-2 rounded hover:bg-red-700">鑄造高粱酒資產</button>
+            </div>
+        </section>
+
+        <section id="vipSection" class="hidden mb-8 glass-card p-6 rounded-xl border-t-4 border-amber-500 shadow">
+            <h2 class="text-2xl font-bold mb-4 text-amber-700">👑 我的 VIP 窖藏資產</h2>
+            <div id="myAssets" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <p class="text-gray-500 italic">正在讀取您的窖藏資料...</p>
+            </div>
+        </section>
+
+        <section class="glass-card p-6 rounded-xl border-t-4 border-blue-500 shadow">
+            <h2 class="text-2xl font-bold mb-4 text-blue-700">🔍 高粱酒溯源查詢</h2>
+            <div class="flex gap-2 mb-4">
+                <input id="searchId" type="number" placeholder="輸入 Token ID (例如: 0)" class="border p-2 flex-grow rounded">
+                <button onclick="queryLiquor()" class="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700">查詢</button>
+            </div>
+            <div id="queryResult" class="p-4 bg-blue-50 rounded hidden">
+                </div>
+        </section>
+    </main>
+
+    <script>
+        // --- 設定區 ---
+        const contractAddress = "YOUR_CONTRACT_ADDRESS_HERE"; // ⚠️ 請更換為你的合約地址
+        const abi = [
+            "function owner() view returns (address)",
+            "function balanceOf(address) view returns (uint256)",
+            "function mintLiquor(address,string,string,uint256,uint256,string) public",
+            "function liquorRegistry(uint256) view returns (string,uint256,uint256,string,bool)",
+            "function tokenOfOwnerByIndex(address,uint256) view returns (uint256)", // 如果有使用 ERC721Enumerable
+            "function redeemLiquor(uint256) public"
+        ];
+
+        let provider, signer, contract;
+
+        // --- 初始化與角色判斷 ---
+        async function init() {
+            if (window.ethereum) {
+                provider = new ethers.BrowserProvider(window.ethereum);
+                document.getElementById('connectBtn').addEventListener('click', connectWallet);
+            } else {
+                alert("請安裝 MetaMask 錢包！");
+            }
+        }
+
+        async function connectWallet() {
+            try {
+                const accounts = await provider.send("eth_requestAccounts", []);
+                signer = await provider.getSigner();
+                contract = new ethers.Contract(contractAddress, abi, signer);
+                
+                const userAddr = await signer.getAddress();
+                document.getElementById('accountDisplay').innerText = `錢包: ${userAddr.substring(0,6)}...${userAddr.substring(38)}`;
+                
+                checkRole(userAddr);
+            } catch (error) {
+                console.error("連接失敗:", error);
+            }
+        }
+
+        async function checkRole(userAddr) {
+            const adminAddr = await contract.owner();
+            const badge = document.getElementById('roleBadge');
+            
+            // 1. 判斷管理者
+            if (userAddr.toLowerCase() === adminAddr.toLowerCase()) {
+                badge.innerText = "當前身份：酒廠管理者";
+                badge.className = "mb-6 inline-block px-4 py-1 rounded-full text-sm font-bold bg-red-100 text-red-700";
+                document.getElementById('adminSection').classList.remove('hidden');
+            } 
+            
+            // 2. 判斷 VIP (持有者)
+            const balance = await contract.balanceOf(userAddr);
+            if (balance > 0n) {
+                if (userAddr.toLowerCase() !== adminAddr.toLowerCase()) {
+                    badge.innerText = "當前身份：尊榮 VIP 投資者";
+                    badge.className = "mb-6 inline-block px-4 py-1 rounded-full text-sm font-bold bg-amber-100 text-amber-700";
+                }
+                document.getElementById('vipSection').classList.remove('hidden');
+                loadVipAssets(userAddr, balance);
+            }
+        }
+
+        // --- 功能操作 ---
+        async function mintLiquor() {
+            const to = document.getElementById('mintTo').value;
+            const uri = document.getElementById('mintUri').value;
+            const batch = document.getElementById('mintBatch').value;
+            const vol = document.getElementById('mintVol').value;
+            const loc = document.getElementById('mintLoc').value;
+            const date = Math.floor(Date.now() / 1000);
+
+            try {
+                const tx = await contract.mintLiquor(to, uri, batch, date, vol, loc);
+                alert("鑄造交易已送出，等待區塊鏈確認...");
+                await tx.wait();
+                alert("鑄造成功！");
+            } catch (err) {
+                alert("操作失敗: " + err.reason);
+            }
+        }
+
+        async function queryLiquor() {
+            const id = document.getElementById('searchId').value;
+            try {
+                const res = await contract.liquorRegistry(id);
+                const resultDiv = document.getElementById('queryResult');
+                resultDiv.classList.remove('hidden');
+                resultDiv.innerHTML = `
+                    <p><b>批號:</b> ${res[0]}</p>
+                    <p><b>釀造日期:</b> ${new Date(Number(res[1])*1000).toLocaleDateString()}</p>
+                    <p><b>容量:</b> ${res[2]} 公升</p>
+                    <p><b>目前存放:</b> ${res[3]}</p>
+                    <p><b>狀態:</b> ${res[4] ? '<span class="text-red-500">已領取實體</span>' : '<span class="text-green-500">窖藏中 (資產有效)</span>'}</p>
+                `;
+            } catch (err) {
+                alert("找不到該資產編號");
+            }
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
